@@ -197,7 +197,7 @@ def get_request_handler(
     body_field: Optional[ModelField] = None,
     status_code: Optional[int] = None,
     response_class: Union[Type[Response], DefaultPlaceholder] = Default(JSONResponse),
-    response_field: Optional[ModelField] = None,
+    insecure_response_field: Optional[ModelField] = None,
     response_model_include: Optional[IncEx] = None,
     response_model_exclude: Optional[IncEx] = None,
     response_model_by_alias: bool = True,
@@ -213,8 +213,20 @@ def get_request_handler(
         actual_response_class: Type[Response] = response_class.value
     else:
         actual_response_class = response_class
+    secure_cloned_response_field: Optional[ModelField] = None
 
     async def app(request: Request) -> Response:
+        # Create a clone of the field, so that a Pydantic submodel is not returned
+        # as is just because it's an instance of a subclass of a more limited class
+        # e.g. UserInDB (containing hashed_password) could be a subclass of User
+        # that doesn't have the hashed_password. But because it's a subclass, it
+        # would pass the validation and be returned as is.
+        # By being a new field, no inheritance will be passed as is. A new model
+        # will always be created.
+        # TODO: remove when deprecating Pydantic v1
+        nonlocal secure_cloned_response_field
+        if secure_cloned_response_field is None and insecure_response_field is not None:
+            secure_cloned_response_field = create_cloned_field(insecure_response_field)
         try:
             body: Any = None
             if body_field:
@@ -289,7 +301,7 @@ def get_request_handler(
             if sub_response.status_code:
                 response_args["status_code"] = sub_response.status_code
             content = await serialize_response(
-                field=response_field,
+                field=secure_cloned_response_field,
                 response_content=raw_response,
                 include=response_model_include,
                 exclude=response_model_exclude,
@@ -450,20 +462,8 @@ class APIRoute(routing.Route):
                 type_=self.response_model,
                 mode="serialization",
             )
-            # Create a clone of the field, so that a Pydantic submodel is not returned
-            # as is just because it's an instance of a subclass of a more limited class
-            # e.g. UserInDB (containing hashed_password) could be a subclass of User
-            # that doesn't have the hashed_password. But because it's a subclass, it
-            # would pass the validation and be returned as is.
-            # By being a new field, no inheritance will be passed as is. A new model
-            # will always be created.
-            # TODO: remove when deprecating Pydantic v1
-            self.secure_cloned_response_field: Optional[
-                ModelField
-            ] = create_cloned_field(self.response_field)
         else:
             self.response_field = None  # type: ignore
-            self.secure_cloned_response_field = None
         self.dependencies = list(dependencies or [])
         self.description = description or inspect.cleandoc(self.endpoint.__doc__ or "")
         # if a "form feed" character (page break) is found in the description text,
@@ -501,7 +501,7 @@ class APIRoute(routing.Route):
             body_field=self.body_field,
             status_code=self.status_code,
             response_class=self.response_class,
-            response_field=self.secure_cloned_response_field,
+            insecure_response_field=self.response_field,
             response_model_include=self.response_model_include,
             response_model_exclude=self.response_model_exclude,
             response_model_by_alias=self.response_model_by_alias,

@@ -1,6 +1,7 @@
 """FastAPI framework, high performance, easy to learn, fast to code, ready for production"""
 
 __version__ = "0.103.0"
+__lazy_create_cloned_field__ = True
 
 from starlette import status as status
 
